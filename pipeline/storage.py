@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 DB_NAME = "vc_data.db"
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    return sqlite3.connect(DB_NAME)
 
 def init_db():
     conn = get_connection()
@@ -33,8 +33,7 @@ def init_db():
             processed_at TEXT
         )
     """)
-    conn.commit()
-    conn.close()
+  
 
     # # add fetched_at column if the table already existed before 
     # cursor.execute('PRAGMA table_info(articles)')

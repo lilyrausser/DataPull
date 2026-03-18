@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 vc_data.db
 .env
+*.csv
+results/

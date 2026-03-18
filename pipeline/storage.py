@@ -63,9 +63,10 @@ def get_unprocessed_articles(limit=20):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT id, source, title, link
+    SELECT id, source, title, link, summary
     FROM articles
     WHERE processed = 0
+        AND (article_text IS NULL OR article_text = '')
     LIMIT ? 
     """, (limit,))
 

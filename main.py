@@ -20,7 +20,7 @@ def run(days_back):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--days-back', type=int, default=14, 
+    parser.add_argument('--days-back', type=int, default=2, 
                         help= 'How many days back to fetch from RSS feeds')
     args = parser.parse_args()
     run(days_back=args.days_back)

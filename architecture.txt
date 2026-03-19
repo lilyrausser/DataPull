@@ -1,0 +1,1 @@
+RSS fetch --> lexicon filter --> LLM relevance check (title + summary) --> save to DB --> scrape --> english / length checks 

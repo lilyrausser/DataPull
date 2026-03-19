@@ -71,6 +71,7 @@ def main():
             if not is_english(article_text):
                 print("Article is not in English")
                 mark_article_failed(article_id, fetch_status='not_english')
+                continue 
             status = "success"
             if len(cleaned) < 500:
                 status = "partial_extraction"

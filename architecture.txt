@@ -1,1 +1,39 @@
 RSS fetch --> lexicon filter --> LLM relevance check (title + summary) --> save to DB --> scrape --> english / length checks 
+
+1. manually review a sample of articles to see if there are patterns of what not wanting
+- Job postings / hiring announcements
+- Opinion pieces with no company news
+- Product reviews
+- Articles that mention VC terms but are about public markets
+- Non-English articles that slipped through
+- Paywalled articles with no extracted text
+
+Phase 1 (now):
+- Manual review 100-200 articles → define filter rules
+- LLM relevance filter with explicit exclusion criteria
+- LLM structured extraction → save fields to DB
+
+Phase 2 (once you have 500+ articles):
+- Generate embeddings for clean_text
+- Store in vector DB (ChromaDB is simplest to start)
+- Basic semantic search
+
+Phase 3 (once you want insights):
+- Clustering across archive
+- RAG query layer
+- Trend reports
+
+
+RSS fetch
+→ lexicon filter
+→ LLM relevance filter (title + summary only)  ← cheap, runs on short text
+→ save to DB (only relevant articles)
+→ article_parser (scrape + clean_text)          ← only runs on articles that passed filter
+→ LLM structured extraction
+
+# Instead of binary YES/NO
+{
+  "relevant": true,
+  "confidence": "low" | "medium" | "high",
+  "reason": "mentions Series A funding for fintech startup"
+}

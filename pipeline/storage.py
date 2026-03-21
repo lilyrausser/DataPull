@@ -58,6 +58,13 @@ def insert_article(source, title, link, published, summary, fetched_at):
     conn.commit()
     conn.close()
 
+def delete_source(source_name: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM articles WHERE source = ?", (source_name,))
+    conn.commit()
+    conn.close()
+
 def get_unprocessed_articles(limit=20):
     conn = get_connection()
     cursor = conn.cursor()

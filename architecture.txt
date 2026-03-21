@@ -10,8 +10,7 @@ RSS fetch --> lexicon filter --> LLM relevance check (title + summary) --> save 
 
 Phase 1 (now):
 - Manual review 100-200 articles → define filter rules
-- LLM relevance filter with explicit exclusion criteria
-- LLM structured extraction → save fields to DB
+
 
 Phase 2 (once you have 500+ articles):
 - Generate embeddings for clean_text
@@ -26,14 +25,5 @@ Phase 3 (once you want insights):
 
 RSS fetch
 → lexicon filter
-→ LLM relevance filter (title + summary only)  ← cheap, runs on short text
-→ save to DB (only relevant articles)
 → article_parser (scrape + clean_text)          ← only runs on articles that passed filter
 → LLM structured extraction
-
-# Instead of binary YES/NO
-{
-  "relevant": true,
-  "confidence": "low" | "medium" | "high",
-  "reason": "mentions Series A funding for fintech startup"
-}

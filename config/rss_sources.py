@@ -3,7 +3,6 @@ rss_sources = {
     "Crunchbase News": "https://news.crunchbase.com/feed/",
     "VentureBeat": "https://venturebeat.com/feed/",
     "Sifted": "https://sifted.eu/feed",
-    "Reuters": "https://www.reuters.com/business/rss",
     "CNBC": "https://www.cnbc.com/id/19854910/device/rss/rss.html",
     "PitchBook News": "https://pitchbook.com/news/feed",
     "Tech Funding News": "https://techfundingnews.com/feed/",
@@ -18,10 +17,5 @@ rss_sources = {
     "Andreessen Horowitz": "https://a16z.com/feed/",
     "Sequoia Capital": "https://www.sequoiacap.com/feed/",
     "Redpoint": "https://redpoint.com/feed/",
-    "Exploding Topics": "https://explodingtopics.com/blog/rss.xml",
-    "Product Hunt": "https://www.producthunt.com/feed",
-    "Indie Hackers": "https://www.indiehackers.com/feed",
-    "Hacker News": "https://news.ycombinator.com/rss",
     "SemiAnalysis": "https://www.semianalysis.com/feed",
-    "MarkTechPost": "https://www.marktechpost.com/feed/",
 }

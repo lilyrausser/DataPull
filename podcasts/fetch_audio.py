@@ -27,59 +27,77 @@ def is_recent(entry: feedparser.FeedParserDict, cutoff: datetime) -> bool:
     pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
     return pub_date >= cutoff
 
-def download_episode(entry: feedparser.FeedParserDict, podcast_id: str, output_dir: str) -> str:
-    """Download a single episode mp3, returns path to saved file"""
+def download_episode(entry: feedparser.FeedParserDict, podcast: dict, output_dir: str) -> dict:
+    """Download a single episode mp3, returns metadata dict (or None if skipped)"""
     if not entry.get("enclosures"):
         print(f"    Skipping (no audio): {entry.title}")
         return None
+
     audio_url = entry.enclosures[0].href
-    filename = f"{podcast_id}__{sanitize_filename(entry.title)}.mp3"
+    filename = f"{podcast['id']}__{sanitize_filename(entry.title)}.mp3"
     filepath = os.path.join(output_dir, filename)
 
     if os.path.exists(filepath):
         print(f"    Already exists, skipping: {filename}")
-        return filepath
+    else:
+        print(f"    Downloading: {filename}")
+        response = requests.get(audio_url, stream=True) # stream=True to download in chunks
 
-    print(f"    Downloading: {filename}")
-    response = requests.get(audio_url, stream=True) # stream=True to download in chunks
+        # save to file in chunks to avoid loading entire file into memory
+        with open(filepath, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
 
-    # save to file in chunks to avoid loading entire file into memory
-    with open(filepath, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
+        print(f"    Saved: {filepath}")
 
-    print(f"    Saved: {filepath}")
-    return filepath
+    # convert published_parsed (a time.struct_time tuple) to an ISO string
+    published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).isoformat()
 
-def fetch_recent_episodes(podcast: dict, cutoff: datetime, output_dir: str):
-    """Fetch and download all episodes from the last DAYS_BACK days for a podcast"""
+    return {
+        "podcast_id": podcast["id"],
+        "podcast_name": podcast["name"],
+        "title": entry.title,
+        "published": published,
+        "audio_url": audio_url,
+        "audio_path": filepath,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+def fetch_recent_episodes(podcast: dict, cutoff: datetime, output_dir: str, days_back: int) -> list:
+    """Fetch and download all recent episodes, returns list of metadata dicts"""
     feed = fetch_feed(podcast["rss_feed"])
-    downloaded = 0
+    episodes = []
 
     for entry in feed.entries:
         if not is_recent(entry, cutoff):
             break  # RSS is newest-first, so we can stop here
 
-        download_episode(entry, podcast["id"], output_dir)
-        downloaded += 1
+        metadata = download_episode(entry, podcast, output_dir)
+        if metadata:
+            episodes.append(metadata)
 
-    if downloaded == 0:
-        print(f"    No new episodes in the last {DAYS_BACK} days")
+    if not episodes:
+        print(f"    No new episodes in the last {days_back} days")
     else:
-        print(f"  Found {downloaded} episode(s) in the last {DAYS_BACK} days")
+        print(f"  Found {len(episodes)} episode(s) in the last {days_back} days")
 
-def main():
-    """Main function to fetch feed and download episodes"""
+    return episodes
+
+def main(days_back=DAYS_BACK) -> list:
+    """Fetch and download recent episodes for all podcasts, returns list of metadata dicts"""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=DAYS_BACK)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     print(f"Fetching episodes since {cutoff.strftime('%Y-%m-%d')}\n")
 
+    all_episodes = []
     for podcast in rss_podcasts:
         print(f"Podcast: {podcast['name']}")
-        fetch_recent_episodes(podcast, cutoff, OUTPUT_DIR)
+        episodes = fetch_recent_episodes(podcast, cutoff, OUTPUT_DIR, days_back)
+        all_episodes.extend(episodes)  # extend adds all items from a list, unlike append which adds the list itself
         print()
 
     print(f"Done! Episodes saved to '{OUTPUT_DIR}/'")
+    return all_episodes
 
 if __name__ == "__main__":
     main()

@@ -23,9 +23,7 @@ def transcribe_episode(model: WhisperModel, mp3_path: str) -> str:
 def main():
     """Load model, transcribe all mp3 files in episodes directory, save transcripts, and delete mp3s"""
     model = load_model(MODEL_SIZE)
-
-    mp3_files = [f for f in os.listdir(EPISODES_DIR) if f == "tbpn__Bezos_100B_AI_Plan_Nvida_Chip_Smuggling_The_Mansion_Section__Diet_TBPN.mp3"]
-    # mp3_files = [f for f in os.listdir(EPISODES_DIR) if f.endswith(".mp3")]
+    mp3_files = [f for f in os.listdir(EPISODES_DIR) if f.endswith(".mp3")]
     print(f"\nFound {len(mp3_files)} mp3 files in '{EPISODES_DIR}/'")
 
     for filename in mp3_files:

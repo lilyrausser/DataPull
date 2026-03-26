@@ -2,14 +2,20 @@ import argparse
 # import each module's main() function, but rename it so the names don't clash
 from podcasts.fetch_audio import main as fetch_audio
 from podcasts.transcribe import main as transcribe
+from podcasts.storage import init_db, save_episodes
 
 def run(days_back):
     """Run the full podcast pipeline: fetch audio, then transcribe."""
+    print("Initializing database...")
+    init_db()  # creates the episodes table if it doesn't exist yet
+
     print("=== Step 1: Fetching podcast episodes ===")
-    fetch_audio(days_back=days_back)  # downloads mp3s to podcasts/audio/
+    episodes = fetch_audio(days_back=days_back)  # returns list of metadata dicts
+    new_count = save_episodes(episodes) # inserts metadata into DB, not transcribed yet
+    print(f"Saved {new_count} new episodes to database")
 
     print("\n=== Step 2: Transcribing episodes ===")
-    transcribe()  # reads from podcasts/audio/, writes to podcasts/transcripts/
+    transcribe()  # reads untranscribed episodes from DB, writes transcripts back
 
     print("\nPodcast pipeline complete.")
 

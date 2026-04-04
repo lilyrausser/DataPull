@@ -65,6 +65,17 @@ def delete_source(source_name: str):
     conn.commit()
     conn.close()
 
+def detect_paywall(clean_text: str) -> bool:
+    if not clean_text or len(clean_text) < 200:
+        paywall_signals = [
+            "subscribe", "sign in", "sign up", 
+            "member", "login", "paywall",
+            "unlock", "premium", "access denied"
+        ]
+        text_lower = clean_text.lower() if clean_text else ""
+        return any(signal in text_lower for signal in paywall_signals)
+    return False
+
 def get_unprocessed_articles(limit=20):
     conn = get_connection()
     cursor = conn.cursor()
@@ -126,6 +137,7 @@ def save_articles(articles):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     new_count = 0
+    duplicate_count = 0
     fetched_at = datetime.now(timezone.utc).isoformat()
 
     for article in articles:
@@ -142,8 +154,31 @@ def save_articles(articles):
         ))
         if cursor.rowcount == 1: 
             new_count += 1 
+        else:
+            duplicate_count += 1
 
     conn.commit()
     conn.close()
 
     return new_count 
+
+def get_source_stats():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            source,
+            COUNT(*) as total,
+            SUM(CASE WHEN fetch_status = 'success' THEN 1 ELSE 0 END) as success,
+            SUM(CASE WHEN fetch_status = 'paywalled' THEN 1 ELSE 0 END) as paywalled,
+            SUM(CASE WHEN fetch_status = 'no_text_extracted' THEN 1 ELSE 0 END) as failed,
+            ROUND(100.0 * SUM(CASE WHEN fetch_status = 'success' THEN 1 ELSE 0 END) / COUNT(*), 1) as success_rate
+        FROM articles
+        WHERE processed = 1
+        GROUP BY source
+        ORDER BY success_rate DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+

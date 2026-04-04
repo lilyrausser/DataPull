@@ -1,29 +1,689 @@
-RSS fetch --> lexicon filter --> LLM relevance check (title + summary) --> save to DB --> scrape --> english / length checks 
+# Trend Detection Pipeline — Full Architecture
 
-1. manually review a sample of articles to see if there are patterns of what not wanting
-- Job postings / hiring announcements
-- Opinion pieces with no company news
-- Product reviews
-- Articles that mention VC terms but are about public markets
-- Non-English articles that slipped through
-- Paywalled articles with no extracted text
+## Overview
 
-Phase 1 (now):
-- Manual review 100-200 articles → define filter rules
+Three independent data pipelines (RSS Articles, EDGAR) feed into a unified
+database and LLM analysis layer. The scorer operates on structured JSON output from
+the LLM — no AI needed at the scoring stage. Output is a ranked digest of emerging
+industry gaps and pain points.
 
+---
 
-Phase 2 (once you have 500+ articles):
-- Generate embeddings for clean_text
-- Store in vector DB (ChromaDB is simplest to start)
-- Basic semantic search
+## Pipeline 1 — RSS Articles
 
-Phase 3 (once you want insights):
-- Clustering across archive
-- RAG query layer
-- Trend reports
+### Purpose
+Captures late-stage validation signal. Funding announcements, product launches,
+industry news. Tells you what is already attracting capital.
 
+### Flow
 
+```
 RSS fetch
-→ lexicon filter
-→ article_parser (scrape + clean_text)          ← only runs on articles that passed filter
-→ LLM structured extraction
+  → lexicon pre-filter (title + summary)
+  → article_parser (scrape full text + clean_text)
+  → language / length checks
+  → LLM structured extraction
+  → save to DB (articles table)
+```
+
+### Step 1 — RSS fetch
+### Step 2 — Lexicon pre-filter (no LLM, rule-based)
+
+### Step 3 — Article parser
+- Only runs on articles that passed the pre-filter
+- Scrape full article text using newspaper3k or trafilatura
+- Clean: remove boilerplate, navigation text, ads, event listings
+- Store as clean_text in DB
+
+### Step 4 — Language and length checks
+- Minimum 200 words in clean_text
+- English only (langdetect confidence > 0.95)
+- Drop if clean_text is mostly repeated promotional text
+
+### Step 5 — LLM structured extraction
+Model: Claude Haiku or GPT-4o mini (cost efficient)
+Batch size: 10 articles per call
+
+Prompt:
+```
+You are analysing startup and funding news articles.
+Extract structured information and return ONLY valid JSON.
+No preamble, no markdown, no explanation.
+
+For each article return:
+{
+  "is_relevant": true/false,
+  "company_name": "string or null",
+  "industry": "string — be specific, not just Technology",
+  "funding_amount": "string e.g. $12M or null",
+  "funding_stage": "seed/series_a/series_b/series_c/growth/acquisition or null",
+  "geography": "US/Europe/UK/Asia/Other",
+  "what_company_does": "one sentence max",
+  "problem_being_solved": "one sentence max or null",
+  "is_ai_native": true/false,
+  "maturity": "early/mid/late",
+  "summary": "two sentences max"
+}
+
+Mark is_relevant false for:
+- Public market news
+- General opinion pieces
+- Job postings
+- Product reviews
+- Articles with no specific company news
+
+Article title: {title}
+Article text: {clean_text[:2000]}
+```
+
+### Phase roadmap for articles
+
+Phase 1 (now — first 100-200 articles):
+- Manually review a sample to identify filter gaps
+- Look for: job postings that slipped through, opinion pieces, public market
+  articles, non-English, paywalled with no text
+- Refine lexicon filter rules based on findings
+
+Phase 2 (500+ articles):
+- Generate embeddings for clean_text
+- Store in vector DB (ChromaDB — simplest to start, runs locally)
+- Enable semantic search across archive
+
+Phase 3 (insight layer):
+- Clustering across archive to find theme groups
+- RAG query layer — ask questions against your archive
+- Automated trend reports comparing this week vs last month
+
+---
+
+## Pipeline 3 — SEC EDGAR
+
+### Purpose
+Earliest funding signal for US companies. Form D filings are required within
+15 days of first sale — before any press release, before TechCrunch coverage.
+Captures raises that will appear in your RSS pipeline 2-6 weeks later.
+
+### Authentication
+No API key required. Free public access. Only requirement is a User-Agent
+header identifying you in every request:
+
+```python
+headers = {
+    "User-Agent": "Your Name yourname@email.com"
+}
+```
+
+### Flow
+
+```
+EDGAR Form D fetch (weekly)
+  → parse filing fields
+  → company enrichment API lookup (Hunter.io / Apollo / PDL)
+  → LLM company classification
+  → save to DB (edgar_filings table)
+```
+
+### Step 1 — Form D fetch
+Endpoint:
+```
+https://efts.sec.gov/LATEST/search-index?q=%22Form+D%22&forms=D
+  &dateRange=custom&startdt={start_date}&enddt={end_date}
+```
+
+Fields available per filing:
+- display_names — company name and CIK
+- file_date — when they filed (within 15 days of raise)
+- biz_locations — city and state of operation
+- inc_states — state of incorporation (DE = common for tech startups)
+- form — D (new filing) or D/A (amendment)
+- sics — industry code (often blank, companies self-report)
+- adsh — unique filing ID (use to fetch full filing for amount)
+
+Run weekly. On first run go back 60 days to build historical base.
+
+### Step 2 — Fetch full filing for amount raised
+The search endpoint does not return dollar amount. Use adsh to get full filing:
+
+```
+https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany
+  &CIK={cik}&type=D&dateb=&owner=include&count=10&search_text=
+```
+
+Or fetch the filing XML directly:
+```
+https://www.sec.gov/Archives/edgar/data/{cik}/{adsh}.txt
+```
+
+Parse totalOfferingAmount from the XML. Filter for amounts under $10M
+to focus on early stage. Larger amounts tend to already have press coverage.
+
+### Step 3 — Company enrichment
+SIC field is often blank. Use company name to look up details.
+
+Options in order of recommendation:
+1. Hunter.io — free tier, returns company description, industry, size, website
+   from company name or domain. Good hit rate for small companies.
+2. Apollo.io — free tier, broader database, good for US companies
+3. People Data Labs — free tier, company enrichment endpoint
+
+Pass company name to enrichment API. If no hit (common for very early stage),
+fall back to LLM inference from company name alone.
+
+### Step 4 — LLM company classification
+Model: Claude Haiku or GPT-4o mini
+
+Prompt:
+```
+Classify this company filing and return ONLY valid JSON:
+{
+  "industry": "specific industry — not just Technology",
+  "what_company_likely_does": "one sentence inference",
+  "is_relevant": true/false,
+  "relevance_reason": "one sentence or null",
+  "stage": "early",
+  "geography": "US"
+}
+
+Mark is_relevant false for:
+- Real estate funds and SPVs
+- Investment funds and holding companies (name contains Capital, Partners,
+  Holdings, Fund, LP, LLC that appears to be a vehicle not an operating company)
+- Established companies doing follow-on raises
+
+Company name: {company_name}
+State of operation: {biz_state}
+State of incorporation: {inc_state}
+Amount raised: {amount}
+SIC code: {sic or "not provided"}
+Enrichment data: {enrichment_result or "not available"}
+```
+
+---
+
+## Database Structure
+
+### When to use SQLite vs Postgres
+
+Stay on SQLite until any of these trigger:
+- Over 100,000 rows total across all tables
+- Multiple processes writing simultaneously
+- Need to query from a machine other than your laptop
+- Running scraper on a server 24/7
+
+Move to Postgres when triggered. Run Postgres locally first (free, no cloud needed).
+Cloud (AWS RDS, Azure, GCP Cloud SQL) only needed when you want 24/7 uptime
+without your laptop being on, or access from multiple machines.
+
+### Table definitions
+
+```sql
+-- Raw incoming posts and articles before LLM processing
+CREATE TABLE raw_posts (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,           -- 'reddit', 'rss', 'edgar'
+    subreddit TEXT,                 -- reddit only
+    title TEXT,
+    body TEXT,
+    url TEXT,
+    score INTEGER,                  -- reddit upvotes
+    comment_count INTEGER,
+    author TEXT,
+    created_at TIMESTAMP,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processed BOOLEAN DEFAULT FALSE,
+    stage TEXT                      -- 'early', 'validation', 'practitioner'
+);
+
+-- LLM analysis output — one row per raw_post
+CREATE TABLE analyzed_posts (
+    id TEXT PRIMARY KEY,
+    raw_post_id TEXT REFERENCES raw_posts(id),
+    source TEXT,
+    is_pain_point BOOLEAN,
+    is_relevant BOOLEAN,
+    industry TEXT,
+    problem TEXT,
+    current_workaround TEXT,
+    what_company_does TEXT,
+    funding_amount TEXT,
+    funding_stage TEXT,
+    geography TEXT,
+    specificity TEXT,               -- low/medium/high
+    urgency TEXT,                   -- low/medium/high
+    ai_solvable BOOLEAN,
+    community_validation TEXT,
+    scale_complaint BOOLEAN,
+    maturity TEXT,
+    summary TEXT,
+    analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- EDGAR filings — separate table, different shape
+CREATE TABLE edgar_filings (
+    id TEXT PRIMARY KEY,            -- adsh filing ID
+    company_name TEXT,
+    cik TEXT,
+    amount_raised REAL,
+    industry TEXT,
+    sic_code TEXT,
+    state_of_operation TEXT,
+    state_of_incorporation TEXT,
+    filing_type TEXT,               -- D or D/A
+    filed_at TIMESTAMP,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    enrichment_data TEXT,           -- JSON blob from enrichment API
+    llm_classification TEXT,        -- JSON blob from LLM
+    is_relevant BOOLEAN,
+    processed BOOLEAN DEFAULT FALSE
+);
+
+-- Scored themes — updated by scorer after each pipeline run
+CREATE TABLE themes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    theme TEXT NOT NULL,
+    industry TEXT,
+    reddit_count INTEGER DEFAULT 0,
+    article_count INTEGER DEFAULT 0,
+    edgar_count INTEGER DEFAULT 0,
+    total_count INTEGER DEFAULT 0,
+    avg_urgency_score REAL,
+    avg_specificity_score REAL,
+    cross_source_match BOOLEAN DEFAULT FALSE,
+    trend_direction TEXT,           -- 'rising', 'stable', 'falling'
+    first_seen TIMESTAMP,
+    last_seen TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Deleted post tracking for Reddit compliance
+CREATE TABLE deleted_posts (
+    raw_post_id TEXT,
+    deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reason TEXT                     -- 'user_deleted', 'account_deleted'
+);
+```
+
+### Indexes worth adding from the start
+```sql
+CREATE INDEX idx_raw_posts_source ON raw_posts(source);
+CREATE INDEX idx_raw_posts_processed ON raw_posts(processed);
+CREATE INDEX idx_analyzed_posts_industry ON analyzed_posts(industry);
+CREATE INDEX idx_analyzed_posts_is_pain_point ON analyzed_posts(is_pain_point);
+CREATE INDEX idx_themes_industry ON themes(industry);
+CREATE INDEX idx_edgar_filed_at ON edgar_filings(filed_at);
+```
+
+---
+
+## Scorer
+
+No LLM at this stage — pure math on JSON fields from analyzed_posts.
+
+### Scoring logic
+
+```python
+def score_themes(db, window_days=30):
+    """
+    Pull analyzed posts from last window_days.
+    Group by industry + problem keywords.
+    Score each theme cluster.
+    """
+    
+    # Base score components
+    reddit_weight = 3       # practitioner pain = highest signal
+    article_weight = 1      # validation signal = lower weight
+    edgar_weight = 2        # early funding = medium weight
+    
+    # Multipliers
+    cross_source_multiplier = 2.5   # appears in 2+ sources = real
+    high_urgency_multiplier = 1.5
+    high_specificity_multiplier = 1.3
+    scale_complaint_multiplier = 1.2
+    
+    # Trend direction
+    # Compare count in last 7 days vs count in prior 7 days
+    # rising: last 7 > prior 7 by 50%+
+    # falling: last 7 < prior 7 by 50%+
+    # stable: otherwise
+```
+
+### What makes a high score
+A theme scores highest when it:
+- Appears in Reddit practitioner posts AND funding articles AND EDGAR filings
+- Has high urgency and high specificity in Reddit posts
+- Is accelerating (more mentions this week than last week)
+- Has scale complaints (works at small scale, breaks at large scale)
+
+---
+
+## .env File — Complete
+
+```
+# Reddit (fill in after API approval)
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT=script:trend-scraper:v1.0.0 (by /u/yourusername)
+REDDIT_USERNAME=
+REDDIT_PASSWORD=
+
+# EDGAR (no key — just your contact info)
+EDGAR_USER_AGENT=Your Name yourname@email.com
+
+# LLM
+ANTHROPIC_API_KEY=
+
+# Company enrichment (pick one to start)
+HUNTER_API_KEY=
+APOLLO_API_KEY=
+
+# Optional — Crunchbase free tier
+CRUNCHBASE_API_KEY=
+```
+
+---
+
+## File Structure
+
+```
+trend-scraper/
+├── .env                    # all credentials — never commit this
+├── .gitignore              # include .env and *.db
+├── requirements.txt
+├── main.py                 # orchestrator — runs all pipelines
+├── scheduler.py            # cron-style scheduler
+├── db.py                   # database connection and table setup
+├── config.py               # loads .env, exposes constants
+│
+├── fetchers/
+│   ├── rss_fetcher.py      # RSS feeds → raw_posts
+│   ├── reddit_fetcher.py   # PRAW → raw_posts
+│   └── edgar_fetcher.py    # EDGAR API → edgar_filings
+│
+├── processors/
+│   ├── pre_filter.py       # rule-based filter before LLM
+│   ├── article_parser.py   # scrape + clean full article text
+│   └── llm_analyzer.py     # LLM calls → analyzed_posts
+│
+├── scorer.py               # math on analyzed_posts → themes
+├── output.py               # digest generation → CSV or summary
+│
+└── prompts/
+    ├── article_prompt.txt  # RSS article extraction prompt
+    ├── reddit_prompt.txt   # Reddit pain point prompt
+    └── edgar_prompt.txt    # EDGAR company classification prompt
+```
+
+---
+
+## Schedule
+
+```python
+# scheduler.py
+import schedule
+import time
+
+schedule.every().day.at("06:00").do(run_rss_pipeline)
+schedule.every().day.at("06:30").do(run_reddit_pipeline)
+schedule.every().monday.at("07:00").do(run_edgar_pipeline)
+schedule.every().day.at("08:00").do(run_scorer)
+schedule.every().monday.at("08:30").do(generate_weekly_digest)
+```
+
+---
+
+## Install
+
+```bash
+pip install praw feedparser requests python-dotenv anthropic \
+            newspaper3k trafilatura langdetect chromadb schedule
+```
+
+---
+
+## Build Order
+
+1. db.py — set up tables first, everything else depends on it
+2. config.py — load .env, one place for all constants
+3. rss_fetcher.py — test with feedparser, no auth needed
+4. pre_filter.py — rule-based filter, testable immediately
+5. article_parser.py — scrape and clean text
+6. edgar_fetcher.py — test EDGAR endpoint, no auth needed
+7. llm_analyzer.py — wire up Anthropic API, test with 5 posts
+8. scorer.py — build once you have 50+ analyzed records
+9. reddit_fetcher.py — build after API approval comes through
+10. output.py — build last once pipeline produces real data
+11. main.py + scheduler.py — wire everything together
+12. Manual review pass — review 100-200 results, tune filters
+
+---
+
+## Company Enrichment APIs
+
+Use to fill gaps when EDGAR SIC code is blank.
+
+Hunter.io:
+- Free tier: 25 searches/month
+- Endpoint: api.hunter.io/v2/companies/find?domain={domain}
+- Returns: description, industry, size, founded year
+
+Apollo.io:
+- Free tier: limited monthly credits
+- Good for US companies, broader database than Hunter
+
+People Data Labs:
+- Free tier available
+- Company enrichment from name or domain
+
+Practical approach: try Hunter first, fall back to Apollo,
+fall back to LLM inference from company name alone.
+LLM inference from name works surprisingly well for descriptive
+company names (Full Bloom Memory Care, Eternal.ag etc.) and
+poorly for generic names (Meridian Technologies LLC).
+
+---
+
+## Notes and Decisions
+
+LLM vs NLP:
+Use LLM. Traditional NLP with embeddings finds semantic similarity
+but struggles with intent. "I've got a colour coded folder system
+my wife hates" conveys the same pain as "I use spreadsheets" but
+keyword matching and embeddings miss it. LLM reads intent directly.
+NLP + vector DB becomes useful later for clustering thousands of
+posts — not a first build concern.
+
+Reddit top vs hot vs new:
+Use hot and new. Top biases toward viral content that is already
+widely known. Hot + new with a minimum engagement filter (upvotes > 3,
+comments > 3) captures the middle tier where genuine operational
+frustration lives before it becomes obvious.
+
+Date filtering on Reddit:
+Do not filter Reddit posts by date. A complaint from 18 months ago
+with ongoing new comments is stronger signal than a fresh post with
+no engagement. Date matters for EDGAR and RSS (recency = relevance)
+but not for Reddit pain point detection.
+
+SQLite to Postgres trigger:
+100k rows, multiple simultaneous writers, or need for remote access.
+Run Postgres locally first — no cloud needed until you want 24/7
+uptime without your laptop being on.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+---
+
+## Pipeline 2 — Reddit
+
+### Purpose
+Captures earliest signal — practitioner pain points before any company exists
+to solve them. Recurring complaints in trade communities precede startups by
+12-18 months.
+
+### Status
+Waiting on Reddit Data API approval. Form submitted. Once approved:
+- Go to reddit.com/prefs/apps
+- Create script app (type: script, redirect: http://localhost:8080)
+- Copy client ID and secret to .env
+
+### Subreddits to track
+
+Trades:
+r/HVAC, r/plumbing, r/electricians, r/welding, r/machining, r/carpentry,
+r/woodworking, r/roofing, r/landscaping, r/lawncare, r/pressurewashing,
+r/poolservice, r/pestcontrol, r/autorepair, r/mechanics
+
+Logistics and shipping:
+r/trucking, r/Fleets, r/deliverydrivers, r/ShipIt, r/ecommerce,
+r/fulfillment, r/amazonFBA, r/shopify, r/warehouseoperations, r/supplychain
+
+Small business:
+r/smallbusiness, r/Entrepreneur, r/selfemployed, r/propertymanagement
+
+Craft and collector commercial:
+r/luthier, r/leathercraft, r/jewelry, r/ceramics, r/watchhorology
+
+### Flow
+
+```
+PRAW fetch (hot + new sort, 100 posts per subreddit)
+  → pre-filter (rule-based)
+  → LLM pain point extraction
+  → save to DB (raw_posts + analyzed_posts tables)
+```
+
+### Step 1 — PRAW fetch
+- Sort: hot and new (not top — top biases toward already-viral content)
+- Limit: 100 posts per subreddit per run
+- For each post: fetch title, body, score (upvotes), comment_count,
+  created_utc, author account age
+- For each post: fetch top 5 comments by score
+- Run daily
+- PRAW handles rate limiting automatically (stay under 100 req/min)
+
+### Step 2 — Pre-filter (rule-based, no LLM)
+Drop posts where:
+- Total text (title + body) under 20 words
+- Author account under 30 days old (likely spam)
+- Score (upvotes) under 3
+- Title matches promotional patterns (contains URL, "check out my",
+  "I built", "launching", "announcing")
+- Already in DB (deduplicate by post ID)
+
+Keep posts where:
+- Comment count above 3 (community engagement exists)
+- Contains any complaint or seeking language (see lexicon below)
+
+Complaint and seeking language to match on:
+```
+"still using spreadsheets"
+"still doing this manually"
+"can't believe there's no"
+"is there any software"
+"does anyone have a system"
+"what do you use to track"
+"looking for something that"
+"takes me hours every week"
+"I just use paper"
+"I use a combination of"
+"I built my own"
+"nothing out there handles"
+"tried X and Y but"
+"went back to pen and paper"
+"works until you get past"
+"doesn't scale when"
+"fine for hobbyists but"
+"I've accepted that I'll just"
+```
+
+Note: This lexicon is a pre-filter only to reduce LLM call volume.
+The LLM makes the actual relevance decision. Update this list as
+you manually review early results.
+
+### Step 3 — LLM pain point extraction
+Model: Claude Haiku or GPT-4o mini
+One post + top comments per LLM call
+
+System prompt:
+```
+You are analysing Reddit posts from trade and small business communities
+to identify genuine operational pain points that software could solve.
+Return ONLY valid JSON. No preamble, no markdown, no explanation.
+```
+
+User prompt:
+```
+Analyse this Reddit post and return:
+{
+  "is_pain_point": true/false,
+  "industry": "specific industry e.g. HVAC, woodworking, trucking",
+  "problem": "one sentence — what specific operational task is broken",
+  "current_workaround": "what they use now e.g. spreadsheet, paper, nothing",
+  "specificity": "low/medium/high",
+  "urgency": "low/medium/high",
+  "ai_solvable": true/false,
+  "community_validation": "low/medium/high",
+  "scale_complaint": true/false,
+  "summary": "two sentences max"
+}
+
+Specificity scoring:
+- high: describes a specific workflow that fails at a specific point
+- medium: general complaint with some workflow detail
+- low: vague frustration with no actionable detail
+
+Urgency scoring:
+- high: actively seeking a solution right now
+- medium: frustrated but not urgently seeking
+- low: casual mention, not a core problem
+
+Community validation scoring:
+- high: upvotes over 50 or comments over 20 showing agreement
+- medium: upvotes 10-50 or comments 5-20
+- low: minimal engagement
+
+Mark is_pain_point false for:
+- General complaints about customers or employees
+- Pricing or wage discussions
+- Posts seeking product recommendations for trade work itself
+- Promotional content
+- Questions about how to do the trade skill, not how to run the business
+
+Subreddit: r/{subreddit}
+Post title: {title}
+Post body: {body}
+Upvotes: {score}
+Comments: {comment_count}
+Top comments: {top_comments}
+```
+
+### Deletion compliance
+Reddit requires deletion of stored content when users delete posts or accounts.
+Store LLM analysis output (JSON fields) rather than raw post text verbatim.
+This satisfies the spirit of the requirement — you're storing interpretation
+not reproduction. Run a weekly cleanup job that checks if source posts still
+exist and marks records as deleted if not.
+
+
+```

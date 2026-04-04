@@ -67,11 +67,19 @@ def main():
                 print("No article text extracted")
                 mark_article_failed(article_id, fetch_status='no_text_extracted')
                 continue 
+
             cleaned = clean_text(article_text)
+
             if not is_english(article_text):
                 print("Article is not in English")
                 mark_article_failed(article_id, fetch_status='not_english')
                 continue 
+
+            if detect_paywall(cleaned):
+                print("Article appears paywalled")
+                mark_article_failed(article_id, fetch_status='paywalled')
+                continue
+            
             status = "success"
             if len(cleaned) < 500:
                 status = "partial_extraction"
